@@ -3,14 +3,12 @@ import { createClient } from '@supabase/supabase-js'
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string
 
-const isConfigured =
-  supabaseUrl &&
-  supabaseAnonKey &&
+export const supabaseConfigured: boolean =
+  !!supabaseUrl &&
+  !!supabaseAnonKey &&
   supabaseUrl.startsWith('https://') &&
   supabaseUrl !== 'SUA_URL_AQUI'
 
-export const supabaseConfigured = isConfigured
-
-export const supabase = isConfigured
+export const supabase = supabaseConfigured
   ? createClient(supabaseUrl, supabaseAnonKey)
   : (null as unknown as ReturnType<typeof createClient>)

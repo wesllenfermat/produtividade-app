@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useAppStore } from '@/stores/useAppStore'
+import type { AppState } from '@/stores/useAppStore'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,10 +13,7 @@ interface Message {
   text: string
 }
 
-function processQuery(
-  query: string,
-  store: ReturnType<typeof useAppStore.getState>
-): string {
+function processQuery(query: string, store: AppState): string {
   const q = query.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
   const today = new Date().toISOString().slice(0, 10)
 
