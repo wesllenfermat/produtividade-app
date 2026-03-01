@@ -22,6 +22,20 @@ export interface PomodoroSession {
   task?: string
 }
 
+/** Entrada de histórico: uma sessão de foco completa */
+export interface PomodoroWorkEntry {
+  id: string
+  task: string
+  startedAt: string  // ISO string
+  endedAt: string    // ISO string
+  focusMinutes: number
+}
+
+export interface PomodoroSettings {
+  focusMinutes: number
+  breakMinutes: number
+}
+
 export interface EisenhowerTask {
   id: string
   title: string
@@ -45,6 +59,8 @@ export interface IvyLeeDay {
 export interface AppState {
   smartGoals: SmartGoal[]
   pomodoroSessions: PomodoroSession[]
+  pomodoroHistory: PomodoroWorkEntry[]
+  pomodoroSettings: PomodoroSettings
   eisenhowerTasks: EisenhowerTask[]
   ivyLeeDays: IvyLeeDay[]
 
@@ -53,6 +69,8 @@ export interface AppState {
   removeSmartGoal: (id: string) => void
 
   addPomodoroSession: (session: PomodoroSession) => void
+  addPomodoroHistory: (entry: PomodoroWorkEntry) => void
+  updatePomodoroSettings: (settings: PomodoroSettings) => void
 
   addEisenhowerTask: (task: EisenhowerTask) => void
   toggleEisenhowerTask: (id: string) => void
@@ -73,6 +91,8 @@ export function initializeStore(userId: string) {
       (set) => ({
         smartGoals: [],
         pomodoroSessions: [],
+        pomodoroHistory: [],
+        pomodoroSettings: { focusMinutes: 25, breakMinutes: 5 },
         eisenhowerTasks: [],
         ivyLeeDays: [],
 
@@ -93,6 +113,13 @@ export function initializeStore(userId: string) {
           set((state) => ({
             pomodoroSessions: [...state.pomodoroSessions, session],
           })),
+        addPomodoroHistory: (entry) =>
+          set((state) => ({
+            // Insere no início para mostrar os mais recentes primeiro
+            pomodoroHistory: [entry, ...state.pomodoroHistory],
+          })),
+        updatePomodoroSettings: (settings) =>
+          set(() => ({ pomodoroSettings: settings })),
 
         addEisenhowerTask: (task) =>
           set((state) => ({

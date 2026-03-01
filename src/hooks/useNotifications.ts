@@ -19,19 +19,19 @@ export function useNotifications() {
     return result === 'granted'
   }, [supported])
 
+  // Lê Notification.permission diretamente (evita stale closure do state)
   const notify = useCallback(
     (title: string, options?: NotificationOptions) => {
-      if (!supported || permission !== 'granted') return
+      if (!supported || Notification.permission !== 'granted') return
       const n = new Notification(title, {
         icon: '/icon.svg',
         badge: '/icon.svg',
         ...options,
       })
-      // Auto-fecha após 6s
       setTimeout(() => n.close(), 6000)
       return n
     },
-    [supported, permission]
+    [supported],
   )
 
   return { permission, supported, requestPermission, notify }
