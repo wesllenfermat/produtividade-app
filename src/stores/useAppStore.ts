@@ -34,6 +34,10 @@ export interface PomodoroWorkEntry {
 export interface PomodoroSettings {
   focusMinutes: number
   breakMinutes: number
+  longBreakMinutes: number
+  longBreakAfter: number   // pomodoros antes da pausa longa
+  autoStart: boolean       // inicia próximo ciclo automaticamente
+  dailyGoal: number        // meta de pomodoros por dia
 }
 
 export interface EisenhowerTask {
@@ -92,7 +96,14 @@ export function initializeStore(userId: string) {
         smartGoals: [],
         pomodoroSessions: [],
         pomodoroHistory: [],
-        pomodoroSettings: { focusMinutes: 25, breakMinutes: 5 },
+        pomodoroSettings: {
+          focusMinutes: 25,
+          breakMinutes: 5,
+          longBreakMinutes: 15,
+          longBreakAfter: 4,
+          autoStart: false,
+          dailyGoal: 8,
+        },
         eisenhowerTasks: [],
         ivyLeeDays: [],
 

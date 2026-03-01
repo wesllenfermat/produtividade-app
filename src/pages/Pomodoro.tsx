@@ -14,10 +14,12 @@ import {
   Settings,
   History,
   Timer,
-  Clock,
+  Target,
+  Zap,
 } from 'lucide-react'
 
 type Tab = 'timer' | 'config' | 'history'
+type Mode = 'focus' | 'break' | 'longBreak'
 
 export default function Pomodoro() {
   const {
@@ -31,40 +33,75 @@ export default function Pomodoro() {
   const { permission, supported, requestPermission, notify } = useNotifications()
 
   const [activeTab, setActiveTab] = useState<Tab>('timer')
+  const [mode, setMode] = useState<Mode>('focus')
   const [minutes, setMinutes] = useState(pomodoroSettings.focusMinutes)
   const [seconds, setSeconds] = useState(0)
   const [isRunning, setIsRunning] = useState(false)
-  const [isBreak, setIsBreak] = useState(false)
   const [task, setTask] = useState('')
+  // Conta pomodoros desde a última pausa longa
+  const [pomodoroCount, setPomodoroCount] = useState(0)
 
   // Configurações locais (formulário)
-  const [focusInput, setFocusInput] = useState(String(pomodoroSettings.focusMinutes))
-  const [breakInput, setBreakInput] = useState(String(pomodoroSettings.breakMinutes))
+  const [cfg, setCfg] = useState({ ...pomodoroSettings })
   const [savedMsg, setSavedMsg] = useState(false)
 
   // Refs para evitar stale closures dentro do setInterval
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const isBreakRef = useRef(isBreak)
+  const modeRef = useRef<Mode>(mode)
   const taskRef = useRef(task)
   const startedAtRef = useRef<string | null>(null)
-  const focusMinutesRef = useRef(pomodoroSettings.focusMinutes)
-  const breakMinutesRef = useRef(pomodoroSettings.breakMinutes)
+  const settingsRef = useRef(pomodoroSettings)
+  const pomodoroCountRef = useRef(pomodoroCount)
 
-  useEffect(() => { isBreakRef.current = isBreak }, [isBreak])
+  useEffect(() => { modeRef.current = mode }, [mode])
   useEffect(() => { taskRef.current = task }, [task])
-  useEffect(() => { focusMinutesRef.current = pomodoroSettings.focusMinutes }, [pomodoroSettings.focusMinutes])
-  useEffect(() => { breakMinutesRef.current = pomodoroSettings.breakMinutes }, [pomodoroSettings.breakMinutes])
+  useEffect(() => { settingsRef.current = pomodoroSettings }, [pomodoroSettings])
+  useEffect(() => { pomodoroCountRef.current = pomodoroCount }, [pomodoroCount])
 
-  // Sincroniza o timer quando as configurações mudam (apenas se parado)
+  // Sincroniza o timer quando as configurações mudam e o timer está parado
   useEffect(() => {
     if (!isRunning) {
-      setMinutes(isBreak ? pomodoroSettings.breakMinutes : pomodoroSettings.focusMinutes)
+      const s = pomodoroSettings
+      if (mode === 'focus') setMinutes(s.focusMinutes)
+      else if (mode === 'break') setMinutes(s.breakMinutes)
+      else setMinutes(s.longBreakMinutes)
       setSeconds(0)
     }
-  }, [pomodoroSettings, isRunning, isBreak])
+  }, [pomodoroSettings, isRunning, mode])
 
+  // Progresso do anel (0 a 1)
+  const totalSecs = (() => {
+    if (mode === 'focus') return pomodoroSettings.focusMinutes * 60
+    if (mode === 'break') return pomodoroSettings.breakMinutes * 60
+    return pomodoroSettings.longBreakMinutes * 60
+  })()
+  const remainingSecs = minutes * 60 + seconds
+  const progress = totalSecs > 0 ? 1 - remainingSecs / totalSecs : 0
+  const r = 88
+  const circumference = 2 * Math.PI * r
+  const strokeDashoffset = circumference * (1 - progress)
+
+  // Contagem diária
   const today = new Date().toISOString().slice(0, 10)
   const todayCount = pomodoroSessions.filter((s) => s.date === today && s.completed).length
+  const goalPercent = Math.min(100, (todayCount / pomodoroSettings.dailyGoal) * 100)
+
+  const switchMode = (nextMode: Mode, autoStart = false) => {
+    const s = settingsRef.current
+    setMode(nextMode)
+    setIsRunning(false)
+    setSeconds(0)
+    startedAtRef.current = null
+    if (nextMode === 'focus') setMinutes(s.focusMinutes)
+    else if (nextMode === 'break') setMinutes(s.breakMinutes)
+    else setMinutes(s.longBreakMinutes)
+
+    if (autoStart) {
+      // Pequeno delay para deixar o state atualizar antes de iniciar
+      setTimeout(() => setIsRunning(true), 300)
+      if (nextMode === 'focus') startedAtRef.current = new Date().toISOString()
+    }
+  }
 
   useEffect(() => {
     if (!isRunning) {
@@ -83,44 +120,56 @@ export default function Pomodoro() {
           clearInterval(intervalRef.current!)
           setIsRunning(false)
 
+          const s = settingsRef.current
           const endedAt = new Date().toISOString()
+          const currentMode = modeRef.current
 
-          if (!isBreakRef.current) {
-            // Sessão de foco concluída → salva
+          if (currentMode === 'focus') {
+            // Salva sessão e histórico
             addPomodoroSession({
               id: crypto.randomUUID(),
               date: new Date().toISOString().slice(0, 10),
-              duration: focusMinutesRef.current,
+              duration: s.focusMinutes,
               completed: true,
               task: taskRef.current || undefined,
             })
-
             if (startedAtRef.current) {
               addPomodoroHistory({
                 id: crypto.randomUUID(),
                 task: taskRef.current || 'Sessão sem título',
                 startedAt: startedAtRef.current,
                 endedAt,
-                focusMinutes: focusMinutesRef.current,
+                focusMinutes: s.focusMinutes,
               })
               startedAtRef.current = null
             }
 
-            notify('🍅 Pomodoro concluído!', {
-              body: taskRef.current
-                ? `Ótimo foco em "${taskRef.current}"! Hora de uma pausa de ${breakMinutesRef.current} min.`
-                : `Ótimo foco! Hora de uma pausa de ${breakMinutesRef.current} min.`,
-            })
-            setIsBreak(true)
-            setMinutes(breakMinutesRef.current)
-            setSeconds(0)
+            // Verifica se é hora da pausa longa
+            const newCount = pomodoroCountRef.current + 1
+            setPomodoroCount(newCount)
+            const isLongBreak = newCount >= s.longBreakAfter
+
+            if (isLongBreak) {
+              setPomodoroCount(0)
+              notify('🍅 Ciclo completo! Pausa longa merecida!', {
+                body: `Você completou ${s.longBreakAfter} pomodoros! Descanse ${s.longBreakMinutes} minutos.`,
+              })
+              switchMode('longBreak', s.autoStart)
+            } else {
+              notify('🍅 Pomodoro concluído!', {
+                body: taskRef.current
+                  ? `Ótimo foco em "${taskRef.current}"! Hora de uma pausa de ${s.breakMinutes} min.`
+                  : `Ótimo foco! Hora de uma pausa de ${s.breakMinutes} min. (${newCount}/${s.longBreakAfter})`,
+              })
+              switchMode('break', s.autoStart)
+            }
           } else {
+            // Pausa (curta ou longa) encerrada
             notify('⏰ Pausa encerrada!', {
               body: 'Hora de voltar ao foco! Inicie um novo Pomodoro.',
             })
-            setIsBreak(false)
-            setMinutes(focusMinutesRef.current)
-            setSeconds(0)
+            switchMode('focus', s.autoStart)
+            if (s.autoStart) startedAtRef.current = new Date().toISOString()
           }
 
           return 0
@@ -136,8 +185,7 @@ export default function Pomodoro() {
   }, [isRunning, addPomodoroSession, addPomodoroHistory, notify])
 
   const handleToggleRunning = () => {
-    if (!isRunning && !isBreak && startedAtRef.current === null) {
-      // Início de nova sessão de foco
+    if (!isRunning && mode === 'focus' && startedAtRef.current === null) {
       startedAtRef.current = new Date().toISOString()
     }
     setIsRunning((r) => !r)
@@ -145,18 +193,24 @@ export default function Pomodoro() {
 
   const reset = () => {
     setIsRunning(false)
-    setIsBreak(false)
+    setMode('focus')
     setMinutes(pomodoroSettings.focusMinutes)
     setSeconds(0)
+    setPomodoroCount(0)
     startedAtRef.current = null
   }
 
   const saveSettings = () => {
-    const focus = Math.max(1, Math.min(90, parseInt(focusInput) || 25))
-    const brk = Math.max(1, Math.min(30, parseInt(breakInput) || 5))
-    updatePomodoroSettings({ focusMinutes: focus, breakMinutes: brk })
-    setFocusInput(String(focus))
-    setBreakInput(String(brk))
+    const s: typeof pomodoroSettings = {
+      focusMinutes: Math.max(1, Math.min(90, parseInt(String(cfg.focusMinutes)) || 25)),
+      breakMinutes: Math.max(1, Math.min(30, parseInt(String(cfg.breakMinutes)) || 5)),
+      longBreakMinutes: Math.max(5, Math.min(60, parseInt(String(cfg.longBreakMinutes)) || 15)),
+      longBreakAfter: Math.max(2, Math.min(10, parseInt(String(cfg.longBreakAfter)) || 4)),
+      autoStart: cfg.autoStart,
+      dailyGoal: Math.max(1, Math.min(20, parseInt(String(cfg.dailyGoal)) || 8)),
+    }
+    updatePomodoroSettings(s)
+    setCfg(s)
     setSavedMsg(true)
     setTimeout(() => setSavedMsg(false), 2500)
   }
@@ -169,16 +223,14 @@ export default function Pomodoro() {
   const formatDateLabel = (isoDate: string) => {
     const [y, m, d] = isoDate.split('-').map(Number)
     const date = new Date(y, m - 1, d)
-    const today = new Date()
-    const yesterday = new Date(today)
-    yesterday.setDate(today.getDate() - 1)
-
-    if (date.toDateString() === today.toDateString()) return 'Hoje'
+    const todayD = new Date()
+    const yesterday = new Date(todayD)
+    yesterday.setDate(todayD.getDate() - 1)
+    if (date.toDateString() === todayD.toDateString()) return 'Hoje'
     if (date.toDateString() === yesterday.toDateString()) return 'Ontem'
     return date.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' })
   }
 
-  // Agrupa histórico por data (já vem em ordem decrescente por inserção)
   const historyByDate = pomodoroHistory.reduce<Record<string, typeof pomodoroHistory>>(
     (acc, entry) => {
       const date = entry.startedAt.slice(0, 10)
@@ -193,6 +245,14 @@ export default function Pomodoro() {
   const totalHours = Math.floor(totalMinutes / 60)
   const totalMins = totalMinutes % 60
 
+  const modeColor = mode === 'focus' ? 'text-primary' : 'text-success'
+  const modeLabel =
+    mode === 'focus'
+      ? `Sessão de Foco · ${pomodoroSettings.focusMinutes} min`
+      : mode === 'break'
+        ? `Pausa curta · ${pomodoroSettings.breakMinutes} min`
+        : `☕ Pausa longa · ${pomodoroSettings.longBreakMinutes} min`
+
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'timer', label: 'Timer', icon: <Timer className="h-4 w-4" /> },
     { id: 'config', label: 'Configurar', icon: <Settings className="h-4 w-4" /> },
@@ -202,11 +262,11 @@ export default function Pomodoro() {
   return (
     <div className="max-w-2xl mx-auto space-y-6">
       {/* Cabeçalho */}
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-3xl font-display font-bold">Pomodoro Timer</h1>
           <p className="text-muted-foreground mt-1">
-            Foco · {pomodoroSettings.focusMinutes} min / Pausa · {pomodoroSettings.breakMinutes} min
+            {pomodoroSettings.focusMinutes} min foco · {pomodoroSettings.breakMinutes} min pausa · pausa longa a cada {pomodoroSettings.longBreakAfter}
           </p>
         </div>
         {supported && (
@@ -247,26 +307,63 @@ export default function Pomodoro() {
         <>
           <Card className="shadow-card">
             <CardContent className="py-10 flex flex-col items-center gap-6">
-              <div
-                className={`text-7xl font-display font-bold tabular-nums ${
-                  isBreak ? 'text-success' : 'text-primary'
-                }`}
-              >
-                {pad(minutes)}:{pad(seconds)}
+              {/* Anel de progresso + timer */}
+              <div className="relative flex items-center justify-center w-56 h-56">
+                <svg
+                  className="absolute inset-0 w-full h-full"
+                  viewBox="0 0 200 200"
+                  style={{ transform: 'rotate(-90deg)' }}
+                >
+                  {/* Trilha de fundo */}
+                  <circle
+                    cx="100" cy="100" r={r}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="8"
+                    style={{ color: 'var(--color-muted-foreground)', opacity: 0.12 }}
+                  />
+                  {/* Progresso */}
+                  <circle
+                    cx="100" cy="100" r={r}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="8"
+                    strokeLinecap="round"
+                    strokeDasharray={circumference}
+                    strokeDashoffset={strokeDashoffset}
+                    style={{
+                      color: mode === 'focus' ? 'var(--color-primary)' : 'var(--color-success)',
+                      transition: 'stroke-dashoffset 0.8s ease, color 0.3s ease',
+                    }}
+                  />
+                </svg>
+
+                {/* Conteúdo central */}
+                <div className="flex flex-col items-center gap-1 z-10">
+                  <div className={`text-5xl font-display font-bold tabular-nums ${modeColor}`}>
+                    {pad(minutes)}:{pad(seconds)}
+                  </div>
+                  {/* Indicadores de ciclo */}
+                  <div className="flex gap-1.5 mt-1">
+                    {Array.from({ length: pomodoroSettings.longBreakAfter }).map((_, i) => (
+                      <div
+                        key={i}
+                        className={`w-2 h-2 rounded-full transition-colors ${
+                          i < pomodoroCount ? 'bg-primary' : 'bg-muted-foreground/20'
+                        }`}
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
 
-              <p className="text-muted-foreground font-medium">
-                {isBreak ? (
-                  <span className="flex items-center gap-2">
-                    <Coffee className="h-4 w-4" /> Pausa de {pomodoroSettings.breakMinutes} min
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-2">
-                    <Clock className="h-4 w-4" /> Sessão de Foco · {pomodoroSettings.focusMinutes} min
-                  </span>
-                )}
+              {/* Modo atual */}
+              <p className={`text-sm font-medium flex items-center gap-2 ${modeColor}`}>
+                {mode === 'focus' ? <Zap className="h-4 w-4" /> : <Coffee className="h-4 w-4" />}
+                {modeLabel}
               </p>
 
+              {/* Campo de tarefa */}
               <Input
                 value={task}
                 onChange={(e) => setTask(e.target.value)}
@@ -275,11 +372,12 @@ export default function Pomodoro() {
                 disabled={isRunning}
               />
 
+              {/* Controles */}
               <div className="flex gap-3">
                 <Button
                   size="lg"
                   onClick={handleToggleRunning}
-                  className={isBreak ? 'bg-success hover:bg-success/90' : ''}
+                  className={mode !== 'focus' ? 'bg-success hover:bg-success/90' : ''}
                 >
                   {isRunning ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
                   {isRunning ? 'Pausar' : 'Iniciar'}
@@ -288,15 +386,50 @@ export default function Pomodoro() {
                   <RotateCcw className="h-5 w-5" /> Resetar
                 </Button>
               </div>
+
+              {/* Atalhos de modo manual */}
+              {!isRunning && (
+                <div className="flex gap-2">
+                  {(['focus', 'break', 'longBreak'] as Mode[]).map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => switchMode(m)}
+                      className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+                        mode === m
+                          ? 'bg-primary/10 border-primary text-primary'
+                          : 'border-border text-muted-foreground hover:text-foreground'
+                      }`}
+                    >
+                      {m === 'focus' ? 'Foco' : m === 'break' ? 'Pausa' : 'Pausa longa'}
+                    </button>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
 
+          {/* Meta diária */}
           <Card>
-            <CardContent className="py-6 text-center">
-              <p className="text-sm text-muted-foreground">Pomodoros concluídos hoje</p>
-              <p className="text-4xl font-display font-bold text-primary mt-2">{todayCount}</p>
-              <p className="text-xs text-muted-foreground mt-1">
-                {todayCount * pomodoroSettings.focusMinutes} minutos de foco
+            <CardContent className="py-5 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Target className="h-4 w-4 text-primary" />
+                  <span className="text-sm font-medium">Meta do dia</span>
+                </div>
+                <span className="text-sm font-semibold text-primary">
+                  {todayCount} / {pomodoroSettings.dailyGoal} pomodoros
+                </span>
+              </div>
+              {/* Barra de progresso */}
+              <div className="w-full h-2.5 rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-primary transition-all duration-500"
+                  style={{ width: `${goalPercent}%` }}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground text-right">
+                {todayCount * pomodoroSettings.focusMinutes} min focados hoje
+                {todayCount >= pomodoroSettings.dailyGoal && ' 🎉 Meta atingida!'}
               </p>
             </CardContent>
           </Card>
@@ -310,65 +443,156 @@ export default function Pomodoro() {
             <CardTitle className="text-base">Configurações do Timer</CardTitle>
           </CardHeader>
           <CardContent className="space-y-6">
+            {/* Foco */}
             <div className="space-y-2">
               <label className="text-sm font-medium">Duração do foco (minutos)</label>
               <div className="flex items-center gap-3">
                 <Input
-                  type="number"
-                  min={1}
-                  max={90}
-                  value={focusInput}
-                  onChange={(e) => setFocusInput(e.target.value)}
+                  type="number" min={1} max={90}
+                  value={cfg.focusMinutes}
+                  onChange={(e) => setCfg((c) => ({ ...c, focusMinutes: Number(e.target.value) }))}
                   className="w-24"
                 />
-                <span className="text-sm text-muted-foreground">Padrão: 25 min · máx. 90</span>
+                <span className="text-sm text-muted-foreground">1 – 90 min</span>
               </div>
-              {/* Atalhos rápidos */}
-              <div className="flex gap-2 mt-1">
-                {[15, 25, 30, 45, 60].map((v) => (
-                  <button
-                    key={v}
-                    onClick={() => setFocusInput(String(v))}
+              <div className="flex gap-2 flex-wrap">
+                {[15, 25, 30, 45, 50, 60].map((v) => (
+                  <button key={v}
+                    onClick={() => setCfg((c) => ({ ...c, focusMinutes: v }))}
                     className={`px-3 py-1 text-xs rounded-full border transition-colors ${
-                      focusInput === String(v)
+                      cfg.focusMinutes === v
                         ? 'bg-primary text-primary-foreground border-primary'
-                        : 'border-border hover:border-primary text-muted-foreground hover:text-foreground'
+                        : 'border-border text-muted-foreground hover:text-foreground'
                     }`}
-                  >
-                    {v} min
-                  </button>
+                  >{v} min</button>
                 ))}
               </div>
             </div>
 
+            {/* Pausa curta */}
             <div className="space-y-2">
-              <label className="text-sm font-medium">Duração da pausa (minutos)</label>
+              <label className="text-sm font-medium">Pausa curta (minutos)</label>
               <div className="flex items-center gap-3">
                 <Input
-                  type="number"
-                  min={1}
-                  max={30}
-                  value={breakInput}
-                  onChange={(e) => setBreakInput(e.target.value)}
+                  type="number" min={1} max={30}
+                  value={cfg.breakMinutes}
+                  onChange={(e) => setCfg((c) => ({ ...c, breakMinutes: Number(e.target.value) }))}
                   className="w-24"
                 />
-                <span className="text-sm text-muted-foreground">Padrão: 5 min · máx. 30</span>
+                <span className="text-sm text-muted-foreground">1 – 30 min</span>
               </div>
-              <div className="flex gap-2 mt-1">
+              <div className="flex gap-2 flex-wrap">
                 {[5, 10, 15, 20].map((v) => (
-                  <button
-                    key={v}
-                    onClick={() => setBreakInput(String(v))}
+                  <button key={v}
+                    onClick={() => setCfg((c) => ({ ...c, breakMinutes: v }))}
                     className={`px-3 py-1 text-xs rounded-full border transition-colors ${
-                      breakInput === String(v)
+                      cfg.breakMinutes === v
                         ? 'bg-success text-white border-success'
-                        : 'border-border hover:border-success text-muted-foreground hover:text-foreground'
+                        : 'border-border text-muted-foreground hover:text-foreground'
                     }`}
-                  >
-                    {v} min
-                  </button>
+                  >{v} min</button>
                 ))}
               </div>
+            </div>
+
+            {/* Pausa longa */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Pausa longa (minutos)</label>
+              <div className="flex items-center gap-3">
+                <Input
+                  type="number" min={5} max={60}
+                  value={cfg.longBreakMinutes}
+                  onChange={(e) => setCfg((c) => ({ ...c, longBreakMinutes: Number(e.target.value) }))}
+                  className="w-24"
+                />
+                <span className="text-sm text-muted-foreground">5 – 60 min</span>
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                {[10, 15, 20, 30].map((v) => (
+                  <button key={v}
+                    onClick={() => setCfg((c) => ({ ...c, longBreakMinutes: v }))}
+                    className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+                      cfg.longBreakMinutes === v
+                        ? 'bg-success text-white border-success'
+                        : 'border-border text-muted-foreground hover:text-foreground'
+                    }`}
+                  >{v} min</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Pausa longa após N pomodoros */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Pausa longa após</label>
+              <div className="flex items-center gap-3">
+                <Input
+                  type="number" min={2} max={10}
+                  value={cfg.longBreakAfter}
+                  onChange={(e) => setCfg((c) => ({ ...c, longBreakAfter: Number(e.target.value) }))}
+                  className="w-24"
+                />
+                <span className="text-sm text-muted-foreground">pomodoros (2–10)</span>
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                {[2, 3, 4, 6].map((v) => (
+                  <button key={v}
+                    onClick={() => setCfg((c) => ({ ...c, longBreakAfter: v }))}
+                    className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+                      cfg.longBreakAfter === v
+                        ? 'bg-primary text-primary-foreground border-primary'
+                        : 'border-border text-muted-foreground hover:text-foreground'
+                    }`}
+                  >{v}x</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Meta diária */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Meta diária de pomodoros</label>
+              <div className="flex items-center gap-3">
+                <Input
+                  type="number" min={1} max={20}
+                  value={cfg.dailyGoal}
+                  onChange={(e) => setCfg((c) => ({ ...c, dailyGoal: Number(e.target.value) }))}
+                  className="w-24"
+                />
+                <span className="text-sm text-muted-foreground">sessões/dia (1–20)</span>
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                {[4, 6, 8, 10, 12].map((v) => (
+                  <button key={v}
+                    onClick={() => setCfg((c) => ({ ...c, dailyGoal: v }))}
+                    className={`px-3 py-1 text-xs rounded-full border transition-colors ${
+                      cfg.dailyGoal === v
+                        ? 'bg-primary text-primary-foreground border-primary'
+                        : 'border-border text-muted-foreground hover:text-foreground'
+                    }`}
+                  >{v}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Auto-início */}
+            <div className="flex items-center justify-between rounded-lg border p-4">
+              <div>
+                <p className="text-sm font-medium">Iniciar próximo ciclo automaticamente</p>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Foco → Pausa → Foco sem precisar clicar
+                </p>
+              </div>
+              <button
+                onClick={() => setCfg((c) => ({ ...c, autoStart: !c.autoStart }))}
+                className={`relative w-11 h-6 rounded-full transition-colors ${
+                  cfg.autoStart ? 'bg-primary' : 'bg-muted-foreground/30'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                    cfg.autoStart ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
             </div>
 
             {isRunning && (
@@ -401,45 +625,39 @@ export default function Pomodoro() {
               <CardContent className="py-4 text-center">
                 <p className="text-xs text-muted-foreground">Tempo total focado</p>
                 <p className="text-3xl font-display font-bold text-primary mt-1">
-                  {totalHours > 0 ? `${totalHours}h ` : ''}
-                  {totalMins}min
+                  {totalHours > 0 ? `${totalHours}h ` : ''}{totalMins}min
                 </p>
               </CardContent>
             </Card>
           </div>
 
-          {/* Lista agrupada por data */}
+          {/* Lista */}
           {pomodoroHistory.length === 0 ? (
             <div className="text-center py-16 text-muted-foreground">
               <History className="h-12 w-12 mx-auto mb-3 opacity-20" />
               <p className="font-medium">Nenhuma sessão registrada ainda.</p>
-              <p className="text-sm mt-1">
-                Complete um Pomodoro para ver o histórico aqui.
-              </p>
+              <p className="text-sm mt-1">Complete um Pomodoro para ver o histórico aqui.</p>
             </div>
           ) : (
             Object.entries(historyByDate)
               .sort(([a], [b]) => b.localeCompare(a))
               .map(([date, entries]) => {
                 const dayTotal = entries.reduce((s, e) => s + e.focusMinutes, 0)
-                const dayHours = Math.floor(dayTotal / 60)
-                const dayMins = dayTotal % 60
+                const dh = Math.floor(dayTotal / 60)
+                const dm = dayTotal % 60
                 return (
                   <div key={date} className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <h3 className="text-sm font-semibold capitalize">
-                        {formatDateLabel(date)}
-                      </h3>
+                      <h3 className="text-sm font-semibold capitalize">{formatDateLabel(date)}</h3>
                       <span className="text-xs text-muted-foreground">
-                        {dayHours > 0 ? `${dayHours}h ` : ''}{dayMins}min · {entries.length} sessão{entries.length !== 1 ? 'ões' : ''}
+                        {dh > 0 ? `${dh}h ` : ''}{dm}min · {entries.length} sessão{entries.length !== 1 ? 'ões' : ''}
                       </span>
                     </div>
-
                     {entries.map((entry) => (
                       <Card key={entry.id} className="border-primary/10 hover:border-primary/30 transition-colors">
                         <CardContent className="py-3 px-4">
                           <div className="flex items-center gap-3">
-                            <div className="shrink-0 w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                            <div className="shrink-0 w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center">
                               <Timer className="h-4 w-4 text-primary" />
                             </div>
                             <div className="flex-1 min-w-0">
