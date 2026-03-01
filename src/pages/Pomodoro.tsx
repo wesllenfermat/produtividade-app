@@ -1,58 +1,83 @@
 import { useState, useEffect, useRef } from 'react'
 import { useAppStore } from '@/stores/useAppStore'
+import { useNotifications } from '@/hooks/useNotifications'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Play, Pause, RotateCcw, Coffee } from 'lucide-react'
+import { Play, Pause, RotateCcw, Coffee, Bell, BellOff } from 'lucide-react'
 
 export default function Pomodoro() {
   const { pomodoroSessions, addPomodoroSession } = useAppStore()
+  const { permission, supported, requestPermission, notify } = useNotifications()
   const [minutes, setMinutes] = useState(25)
   const [seconds, setSeconds] = useState(0)
   const [isRunning, setIsRunning] = useState(false)
   const [isBreak, setIsBreak] = useState(false)
   const [task, setTask] = useState('')
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const isBreakRef = useRef(isBreak)
+  const taskRef = useRef(task)
+
+  useEffect(() => { isBreakRef.current = isBreak }, [isBreak])
+  useEffect(() => { taskRef.current = task }, [task])
 
   const today = new Date().toISOString().slice(0, 10)
   const todayCount = pomodoroSessions.filter((s) => s.date === today && s.completed).length
 
   useEffect(() => {
-    if (isRunning) {
-      intervalRef.current = setInterval(() => {
-        setSeconds((prev) => {
-          if (prev === 0) {
-            setMinutes((m) => {
-              if (m === 0) {
-                setIsRunning(false)
-                if (!isBreak) {
-                  addPomodoroSession({
-                    id: crypto.randomUUID(),
-                    date: today,
-                    duration: 25,
-                    completed: true,
-                    task: task || undefined,
-                  })
-                  setIsBreak(true)
-                  setMinutes(5)
-                } else {
-                  setIsBreak(false)
-                  setMinutes(25)
-                }
-                return m
-              }
-              return m - 1
-            })
-            return prev === 0 && minutes === 0 ? 0 : 59
-          }
-          return prev - 1
-        })
-      }, 1000)
+    if (!isRunning) {
+      if (intervalRef.current) clearInterval(intervalRef.current)
+      return
     }
+
+    intervalRef.current = setInterval(() => {
+      setSeconds((prevSec) => {
+        if (prevSec > 0) return prevSec - 1
+
+        // Seconds hit 0 — decrement minutes
+        setMinutes((prevMin) => {
+          if (prevMin > 0) return prevMin - 1
+
+          // Timer complete
+          clearInterval(intervalRef.current!)
+          setIsRunning(false)
+
+          if (!isBreakRef.current) {
+            addPomodoroSession({
+              id: crypto.randomUUID(),
+              date: new Date().toISOString().slice(0, 10),
+              duration: 25,
+              completed: true,
+              task: taskRef.current || undefined,
+            })
+            notify('🍅 Pomodoro concluído!', {
+              body: taskRef.current
+                ? `Ótimo foco em "${taskRef.current}"! Hora de uma pausa de 5 min.`
+                : 'Ótimo foco! Hora de uma pausa de 5 min.',
+            })
+            setIsBreak(true)
+            setMinutes(5)
+            setSeconds(0)
+          } else {
+            notify('⏰ Pausa encerrada!', {
+              body: 'Hora de voltar ao foco! Inicie um novo Pomodoro.',
+            })
+            setIsBreak(false)
+            setMinutes(25)
+            setSeconds(0)
+          }
+
+          return 0
+        })
+
+        return 59
+      })
+    }, 1000)
+
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current)
     }
-  }, [isRunning, isBreak, task, today, addPomodoroSession, minutes])
+  }, [isRunning, addPomodoroSession, notify])
 
   const reset = () => {
     setIsRunning(false)
@@ -65,9 +90,25 @@ export default function Pomodoro() {
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
-      <div>
-        <h1 className="text-3xl font-display font-bold">Pomodoro Timer</h1>
-        <p className="text-muted-foreground mt-1">Foco em ciclos de 25 minutos</p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-3xl font-display font-bold">Pomodoro Timer</h1>
+          <p className="text-muted-foreground mt-1">Foco em ciclos de 25 minutos</p>
+        </div>
+        {supported && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={requestPermission}
+            className={permission === 'granted' ? 'text-success border-success/30' : ''}
+          >
+            {permission === 'granted' ? (
+              <><Bell className="h-4 w-4" /> Notificações ativas</>
+            ) : (
+              <><BellOff className="h-4 w-4" /> Ativar notificações</>
+            )}
+          </Button>
+        )}
       </div>
 
       <Card className="shadow-card">
@@ -77,9 +118,9 @@ export default function Pomodoro() {
           </div>
           <p className="text-muted-foreground font-medium">
             {isBreak ? (
-              <span className="flex items-center gap-2"><Coffee className="h-4 w-4" /> Pausa</span>
+              <span className="flex items-center gap-2"><Coffee className="h-4 w-4" /> Pausa de 5 min</span>
             ) : (
-              'Foco'
+              'Sessão de Foco'
             )}
           </p>
 
